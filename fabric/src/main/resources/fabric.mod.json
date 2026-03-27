@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "lootinjector",
+  "version": "${version}",
+  "name": "LootInjector",
+  "description": "Structure, loot table, and mob loot injector/editor runtime for Fabric.",
+  "authors": ["cevapi"],
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "dev.cevapi.lootinjector.fabric.LootInjectorFabricMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.17.2",
+    "minecraft": "1.21.11",
+    "fabric-api": "*"
+  }
+}
