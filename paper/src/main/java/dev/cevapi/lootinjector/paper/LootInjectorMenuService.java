@@ -14,6 +14,7 @@ import org.bukkit.entity.Villager;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.ClickType;
+import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.generator.structure.Structure;
@@ -93,19 +94,26 @@ public final class LootInjectorMenuService implements Listener {
     }
 
     public void openStructureList(@NotNull Player player, int page, @NotNull StructureListMode mode) {
-        openStructureList(player, page, mode, null);
+        openStructureList(player, page, mode, null, null);
     }
 
     private void openStructureList(@NotNull Player player, int page, @NotNull StructureListMode mode, String namespaceFilter) {
-        List<String> structures = allStructureIds(namespaceFilter);
+        openStructureList(player, page, mode, namespaceFilter, null);
+    }
+
+    private void openStructureList(@NotNull Player player, int page, @NotNull StructureListMode mode, String namespaceFilter, String groupFilter) {
+        List<String> structures = allStructureIds(namespaceFilter, groupFilter);
         if (mode == StructureListMode.CONFIGURED) {
             structures.removeIf(id -> !store.hasProfile(TargetKey.of(TargetType.STRUCTURE, id)));
         }
         int totalPages = Math.max(1, (structures.size() + PAGE_SIZE - 1) / PAGE_SIZE);
         int safePage = Math.max(0, Math.min(page, totalPages - 1));
         String title = namespaceFilter == null ? "LootInjector Structures" : ("LootInjector " + namespaceFilter);
+        if (groupFilter != null && !"*".equals(groupFilter)) {
+            title += "/" + ("__direct__".equals(groupFilter) ? "direct" : groupFilter);
+        }
 
-        Inventory inventory = Bukkit.createInventory(new StructureListHolder(safePage, mode, namespaceFilter), MENU_SIZE,
+        Inventory inventory = Bukkit.createInventory(new StructureListHolder(safePage, mode, namespaceFilter, groupFilter), MENU_SIZE,
                 Component.text(title + " [" + (safePage + 1) + "/" + totalPages + "]", NamedTextColor.AQUA));
 
         int start = safePage * PAGE_SIZE;
@@ -123,8 +131,33 @@ public final class LootInjectorMenuService implements Listener {
         player.openInventory(inventory);
     }
 
-    private void openStructureEditor(@NotNull Player player, @NotNull String structureId, int page) {
-        openEditor(player, TargetType.STRUCTURE, structureId, page, "namespace");
+    private void openStructureGroupList(@NotNull Player player, int page, @NotNull StructureListMode mode, @NotNull String namespaceFilter) {
+        List<String> groups = structureGroups(namespaceFilter, mode);
+        int totalPages = Math.max(1, (groups.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+        int safePage = Math.max(0, Math.min(page, totalPages - 1));
+
+        Inventory inventory = Bukkit.createInventory(new StructureGroupListHolder(safePage, mode, namespaceFilter), MENU_SIZE,
+                Component.text("LootInjector " + namespaceFilter + " Groups [" + (safePage + 1) + "/" + totalPages + "]", NamedTextColor.AQUA));
+
+        int start = safePage * PAGE_SIZE;
+        int end = Math.min(groups.size(), start + PAGE_SIZE);
+        int slot = 0;
+        for (int i = start; i < end; i++) {
+            inventory.setItem(slot++, structureGroupItem(groups.get(i)));
+        }
+        inventory.setItem(45, navItem("<< Prev", safePage > 0));
+        inventory.setItem(46, backItem());
+        inventory.setItem(47, modeSwitchItem(mode));
+        inventory.setItem(49, infoItem("Pick a structure group"));
+        inventory.setItem(53, navItem("Next >>", safePage + 1 < totalPages));
+        player.openInventory(inventory);
+    }
+
+    private void openStructureEditor(@NotNull Player player,
+                                     @NotNull String structureId,
+                                     int page,
+                                     @NotNull String back) {
+        openEditor(player, TargetType.STRUCTURE, structureId, page, back);
     }
 
     private void openVillagerList(@NotNull Player player, int page) {
@@ -280,6 +313,7 @@ public final class LootInjectorMenuService implements Listener {
         if (!(event.getWhoClicked() instanceof Player player)) return;
         Inventory top = event.getView().getTopInventory();
         if (top.getHolder() instanceof NamespaceListHolder h) handleNamespaceClick(event, player, h);
+        else if (top.getHolder() instanceof StructureGroupListHolder h) handleStructureGroupListClick(event, player, h);
         else if (top.getHolder() instanceof StructureListHolder h) handleStructureListClick(event, player, h);
         else if (top.getHolder() instanceof VillagerListHolder h) handleVillagerListClick(event, player, h);
         else if (top.getHolder() instanceof MobNamespaceListHolder h) handleMobNamespaceListClick(event, player, h);
@@ -291,6 +325,7 @@ public final class LootInjectorMenuService implements Listener {
     public void onDrag(@NotNull InventoryDragEvent event) {
         Inventory top = event.getView().getTopInventory();
         if (!(top.getHolder() instanceof NamespaceListHolder
+                || top.getHolder() instanceof StructureGroupListHolder
                 || top.getHolder() instanceof StructureListHolder
                 || top.getHolder() instanceof VillagerListHolder
                 || top.getHolder() instanceof MobNamespaceListHolder
@@ -324,7 +359,33 @@ public final class LootInjectorMenuService implements Listener {
         if (slot < 3 || slot >= PAGE_SIZE) return;
         int idx = holder.page * namespacePageSize + (slot - 3);
         if (idx < 0 || idx >= namespaces.size()) return;
-        openStructureList(player, 0, StructureListMode.ALL, namespaces.get(idx));
+        String namespace = namespaces.get(idx);
+        if (hasStructureSubgroups(namespace)) {
+            openStructureGroupList(player, 0, StructureListMode.ALL, namespace);
+        } else {
+            openStructureList(player, 0, StructureListMode.ALL, namespace, null);
+        }
+    }
+
+    private void handleStructureGroupListClick(@NotNull InventoryClickEvent event, @NotNull Player player, @NotNull StructureGroupListHolder holder) {
+        if (event.getClickedInventory() == null || !event.getClickedInventory().equals(event.getView().getTopInventory())) return;
+        event.setCancelled(true);
+        List<String> groups = structureGroups(holder.namespaceFilter, holder.mode);
+        int totalPages = Math.max(1, (groups.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+        int slot = event.getRawSlot();
+        if (slot == 45 && holder.page > 0) { openStructureGroupList(player, holder.page - 1, holder.mode, holder.namespaceFilter); return; }
+        if (slot == 53 && holder.page + 1 < totalPages) { openStructureGroupList(player, holder.page + 1, holder.mode, holder.namespaceFilter); return; }
+        if (slot == 46) { openNamespaceList(player, 0); return; }
+        if (slot == 47) {
+            StructureListMode next = holder.mode == StructureListMode.ALL ? StructureListMode.CONFIGURED : StructureListMode.ALL;
+            openStructureGroupList(player, 0, next, holder.namespaceFilter);
+            return;
+        }
+        if (slot < 0 || slot >= PAGE_SIZE) return;
+        int idx = holder.page * PAGE_SIZE + slot;
+        if (idx < 0 || idx >= groups.size()) return;
+        String group = groups.get(idx);
+        openStructureList(player, 0, holder.mode, holder.namespaceFilter, group);
     }
 
     private void handleMobNamespaceListClick(@NotNull InventoryClickEvent event, @NotNull Player player, @NotNull MobNamespaceListHolder holder) {
@@ -391,22 +452,30 @@ public final class LootInjectorMenuService implements Listener {
     private void handleStructureListClick(@NotNull InventoryClickEvent event, @NotNull Player player, @NotNull StructureListHolder holder) {
         if (event.getClickedInventory() == null || !event.getClickedInventory().equals(event.getView().getTopInventory())) return;
         event.setCancelled(true);
-        List<String> structures = allStructureIds(holder.namespaceFilter);
+        List<String> structures = allStructureIds(holder.namespaceFilter, holder.groupFilter);
         if (holder.mode == StructureListMode.CONFIGURED) structures.removeIf(id -> !store.hasProfile(TargetKey.of(TargetType.STRUCTURE, id)));
         int totalPages = Math.max(1, (structures.size() + PAGE_SIZE - 1) / PAGE_SIZE);
         int slot = event.getRawSlot();
-        if (slot == 45 && holder.page > 0) { openStructureList(player, holder.page - 1, holder.mode, holder.namespaceFilter); return; }
-        if (slot == 53 && holder.page + 1 < totalPages) { openStructureList(player, holder.page + 1, holder.mode, holder.namespaceFilter); return; }
-        if (slot == 46) { openNamespaceList(player, 0); return; }
+        if (slot == 45 && holder.page > 0) { openStructureList(player, holder.page - 1, holder.mode, holder.namespaceFilter, holder.groupFilter); return; }
+        if (slot == 53 && holder.page + 1 < totalPages) { openStructureList(player, holder.page + 1, holder.mode, holder.namespaceFilter, holder.groupFilter); return; }
+        if (slot == 46) {
+            if (holder.namespaceFilter != null && hasStructureSubgroups(holder.namespaceFilter)) {
+                openStructureGroupList(player, 0, holder.mode, holder.namespaceFilter);
+            } else {
+                openNamespaceList(player, 0);
+            }
+            return;
+        }
         if (slot == 47) {
             StructureListMode next = holder.mode == StructureListMode.ALL ? StructureListMode.CONFIGURED : StructureListMode.ALL;
-            openStructureList(player, 0, next, holder.namespaceFilter);
+            openStructureList(player, 0, next, holder.namespaceFilter, holder.groupFilter);
             return;
         }
         if (slot < 0 || slot >= PAGE_SIZE) return;
         int idx = holder.page * PAGE_SIZE + slot;
         if (idx < 0 || idx >= structures.size()) return;
-        openStructureEditor(player, structures.get(idx), 0);
+        String back = "structure_list:" + holder.page + ":" + holder.mode.name() + ":" + (holder.namespaceFilter == null ? "*" : holder.namespaceFilter) + ":" + (holder.groupFilter == null ? "*" : holder.groupFilter);
+        openStructureEditor(player, structures.get(idx), 0, back);
     }
 
     private void handleEditorClick(@NotNull InventoryClickEvent event, @NotNull Player player, @NotNull StructureEditorHolder holder) {
@@ -453,6 +522,20 @@ public final class LootInjectorMenuService implements Listener {
                 String raw = holder.back.substring("villager_list:".length());
                 StructureListMode mode = "CONFIGURED".equalsIgnoreCase(raw) ? StructureListMode.CONFIGURED : StructureListMode.ALL;
                 openVillagerList(player, 0, mode);
+            }
+            else if (holder.back != null && holder.back.startsWith("structure_list:")) {
+                String payload = holder.back.substring("structure_list:".length());
+                String[] parts = payload.split(":", 5);
+                int page = 0;
+                try {
+                    page = parts.length > 0 ? Integer.parseInt(parts[0]) : 0;
+                } catch (NumberFormatException ignored) {
+                    page = 0;
+                }
+                StructureListMode mode = (parts.length > 1 && "CONFIGURED".equalsIgnoreCase(parts[1])) ? StructureListMode.CONFIGURED : StructureListMode.ALL;
+                String namespace = parts.length > 2 ? parts[2] : "*";
+                String group = parts.length > 3 ? parts[3] : "*";
+                openStructureList(player, Math.max(0, page), mode, "*".equals(namespace) ? null : namespace, "*".equals(group) ? null : group);
             }
             else if ("mob_list".equals(holder.back)) openMobList(player, 0);
             else if (holder.back != null && holder.back.startsWith("mob_list:")) {
@@ -522,7 +605,9 @@ public final class LootInjectorMenuService implements Listener {
             return;
         }
 
-        if (event.getClick() == ClickType.MIDDLE) {
+        boolean deleteClick = event.getClick() == ClickType.MIDDLE
+                || event.getAction() == InventoryAction.CLONE_STACK;
+        if (deleteClick) {
             store.removeRule(targetKey, selected.rule.id());
             openEditor(player, type, id, holder.page, holder.back);
             return;
@@ -684,16 +769,215 @@ public final class LootInjectorMenuService implements Listener {
     }
 
     private List<String> allStructureIds(String namespaceFilter) {
-        List<String> ids = new ArrayList<>();
+        return allStructureIds(namespaceFilter, null);
+    }
+
+    private List<String> allStructureIds(String namespaceFilter, String groupFilter) {
+        Set<String> known = new LinkedHashSet<>();
         for (Structure structure : plugin.allStructures()) {
-            String id = structure.getKey().toString();
-            if (namespaceFilter == null || id.startsWith(namespaceFilter + ":")) ids.add(id);
+            known.add(structure.getKey().toString().toLowerCase(Locale.ROOT));
         }
         for (String virtualId : VIRTUAL_STRUCTURE_IDS) {
-            if (namespaceFilter == null || virtualId.startsWith(namespaceFilter + ":")) ids.add(virtualId);
+            known.add(virtualId.toLowerCase(Locale.ROOT));
         }
-        ids.sort(String.CASE_INSENSITIVE_ORDER);
-        return ids;
+
+        java.util.Map<String, Boolean> hasBaseLootCache = new java.util.HashMap<>();
+        java.util.function.Function<String, Boolean> hasBaseLoot = id ->
+                hasBaseLootCache.computeIfAbsent(id, key -> !baseLootCatalog.baseItemsForStructure(key).isEmpty());
+
+        Set<String> ids = new LinkedHashSet<>();
+        for (String id : known) {
+            if (namespaceFilter != null && !id.startsWith(namespaceFilter.toLowerCase(Locale.ROOT) + ":")) {
+                continue;
+            }
+            if (hasBaseLoot.apply(id) || store.hasProfile(TargetKey.of(TargetType.STRUCTURE, id))) {
+                ids.add(id);
+            }
+        }
+        for (String tableId : baseLootCatalog.knownLootTableIds()) {
+            for (String alias : structureAliasesForLootTable(tableId)) {
+                String normalized = alias.toLowerCase(Locale.ROOT);
+                if (namespaceFilter != null && !normalized.startsWith(namespaceFilter.toLowerCase(Locale.ROOT) + ":")) {
+                    continue;
+                }
+                if (hasBaseLoot.apply(normalized) || store.hasProfile(TargetKey.of(TargetType.STRUCTURE, normalized))) {
+                    ids.add(normalized);
+                }
+            }
+        }
+        for (String configured : store.configuredTargetKeys(TargetType.STRUCTURE)) {
+            String id = TargetKey.idOf(configured).toLowerCase(Locale.ROOT);
+            if (namespaceFilter == null || id.startsWith(namespaceFilter + ":")) {
+                ids.add(id);
+            }
+        }
+        List<String> out = new ArrayList<>(ids);
+        if (groupFilter != null && !"*".equals(groupFilter)) {
+            String normalizedGroup = groupFilter.toLowerCase(Locale.ROOT);
+            out.removeIf(id -> {
+                int colon = id.indexOf(':');
+                if (colon < 0 || colon + 1 >= id.length()) {
+                    return true;
+                }
+                String path = id.substring(colon + 1);
+                if ("__direct__".equals(normalizedGroup)) {
+                    return path.contains("/");
+                }
+                return !(path.equals(normalizedGroup) || path.startsWith(normalizedGroup + "/"));
+            });
+        }
+        out.sort(String.CASE_INSENSITIVE_ORDER);
+        return out;
+    }
+
+    private boolean hasStructureSubgroups(@NotNull String namespaceFilter) {
+        for (String id : allStructureIds(namespaceFilter)) {
+            int colon = id.indexOf(':');
+            if (colon >= 0 && colon + 1 < id.length() && id.substring(colon + 1).contains("/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> structureGroups(@NotNull String namespaceFilter, @NotNull StructureListMode mode) {
+        List<String> ids = allStructureIds(namespaceFilter);
+        if (mode == StructureListMode.CONFIGURED) {
+            ids.removeIf(id -> !store.hasProfile(TargetKey.of(TargetType.STRUCTURE, id)));
+        }
+        Set<String> groups = new LinkedHashSet<>();
+        groups.add("*");
+        boolean hasDirect = false;
+        for (String id : ids) {
+            int colon = id.indexOf(':');
+            if (colon < 0 || colon + 1 >= id.length()) {
+                continue;
+            }
+            String path = id.substring(colon + 1);
+            int slash = path.indexOf('/');
+            if (slash > 0) {
+                groups.add(path.substring(0, slash));
+            } else {
+                hasDirect = true;
+            }
+        }
+        if (hasDirect) {
+            groups.add("__direct__");
+        }
+        List<String> out = new ArrayList<>(groups);
+        out.sort((a, b) -> {
+            if ("*".equals(a)) return -1;
+            if ("*".equals(b)) return 1;
+            if ("__direct__".equals(a)) return 1;
+            if ("__direct__".equals(b)) return -1;
+            return String.CASE_INSENSITIVE_ORDER.compare(a, b);
+        });
+        return out;
+    }
+
+    private @NotNull Set<String> structureAliasesForLootTable(@NotNull String lootTableId) {
+        Set<String> out = new LinkedHashSet<>();
+        int colon = lootTableId.indexOf(':');
+        if (colon <= 0 || colon + 1 >= lootTableId.length()) {
+            return out;
+        }
+        String namespace = lootTableId.substring(0, colon).toLowerCase(Locale.ROOT);
+        String path = lootTableId.substring(colon + 1).toLowerCase(Locale.ROOT);
+        if (!isLikelyStructureContainerTable(path)) {
+            return out;
+        }
+        String marker = "chests/";
+        int idx = path.indexOf(marker);
+        String tablePath = (idx >= 0 && idx + marker.length() < path.length()) ? path.substring(idx + marker.length()) : path;
+
+        addStructureAliasCandidates(out, namespace, tablePath);
+        addCanonicalStructureAliases(out, namespace, tablePath);
+
+        if (tablePath.startsWith("trial_chambers/") || tablePath.startsWith("trial_chamber/")) {
+            if (tablePath.contains("ominous")) {
+                out.add(namespace + ":trial_chambers_ominous_vault");
+            } else if (tablePath.contains("vault") || tablePath.contains("reward")) {
+                out.add(namespace + ":trial_chambers_vault");
+            } else {
+                out.add(namespace + ":trial_chambers");
+            }
+        }
+        return out;
+    }
+
+    private boolean isLikelyStructureContainerTable(@NotNull String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        String[] denyPrefixes = {
+                "blocks/", "block/",
+                "entities/", "entity/",
+                "items/", "item/",
+                "gameplay/", "gifts/", "gift/",
+                "sheep/", "archeology/", "archaeology/"
+        };
+        for (String prefix : denyPrefixes) {
+            if (lower.startsWith(prefix)) {
+                return false;
+            }
+        }
+        return lower.contains("chest")
+                || lower.contains("barrel")
+                || lower.contains("crate")
+                || lower.contains("cache")
+                || lower.contains("supply")
+                || lower.contains("treasure")
+                || lower.contains("vault")
+                || lower.contains("reward")
+                || lower.contains("/")
+                || lower.startsWith("chests/");
+    }
+
+    private void addStructureAliasCandidates(@NotNull Set<String> out, @NotNull String namespace, @NotNull String tablePath) {
+        if (!tablePath.isBlank()) {
+            out.add(namespace + ":" + tablePath);
+        }
+        String[] parts = tablePath.split("/");
+        if (parts.length > 0) {
+            String first = parts[0];
+            if (!first.isBlank()) out.add(namespace + ":" + first);
+            String last = parts[parts.length - 1];
+            if (!last.isBlank()) out.add(namespace + ":" + last);
+        }
+
+        String leaf = parts.length == 0 ? tablePath : parts[parts.length - 1];
+        if (leaf == null || leaf.isBlank()) {
+            return;
+        }
+        String trimmed = leaf;
+        String[] suffixes = {"_chest", "_barrel", "_crate", "_supply", "_loot", "_cache"};
+        for (String suffix : suffixes) {
+            if (trimmed.endsWith(suffix) && trimmed.length() > suffix.length()) {
+                trimmed = trimmed.substring(0, trimmed.length() - suffix.length());
+                break;
+            }
+        }
+        if (!trimmed.isBlank()) out.add(namespace + ":" + trimmed);
+
+        String[] tokens = trimmed.split("_");
+        if (tokens.length >= 2) {
+            String pair = tokens[0] + "_" + tokens[1];
+            out.add(namespace + ":" + pair);
+        }
+        if (tokens.length >= 3) {
+            String triple = tokens[0] + "_" + tokens[1] + "_" + tokens[2];
+            out.add(namespace + ":" + triple);
+        }
+    }
+
+    private void addCanonicalStructureAliases(@NotNull Set<String> out, @NotNull String namespace, @NotNull String tablePath) {
+        String leaf = tablePath;
+        int slash = tablePath.lastIndexOf('/');
+        if (slash >= 0 && slash + 1 < tablePath.length()) {
+            leaf = tablePath.substring(slash + 1);
+        }
+        if ("nether_bridge".equals(leaf)) {
+            out.add(namespace + ":fortress");
+            out.add(namespace + ":nether_fortress");
+        }
     }
 
     private List<String> allNamespaces() {
@@ -755,7 +1039,7 @@ public final class LootInjectorMenuService implements Listener {
 
     private ItemStack structureItem(String key) {
         boolean configured = store.hasProfile(TargetKey.of(TargetType.STRUCTURE, key));
-        ItemStack item = new ItemStack(configured ? Material.CHEST : Material.BOOK);
+        ItemStack item = new ItemStack(configured ? Material.CHEST : Material.BARRIER);
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
             meta.displayName(Component.text(key, configured ? NamedTextColor.GREEN : NamedTextColor.GRAY));
@@ -801,6 +1085,21 @@ public final class LootInjectorMenuService implements Listener {
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
             meta.displayName(Component.text(vanilla ? "Vanilla (minecraft)" : namespace, NamedTextColor.AQUA));
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
+    private ItemStack structureGroupItem(String group) {
+        ItemStack item = new ItemStack(Material.CHEST);
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            String label = switch (group) {
+                case "*" -> "All Entries";
+                case "__direct__" -> "Direct Entries";
+                default -> group;
+            };
+            meta.displayName(Component.text(label, NamedTextColor.AQUA));
             item.setItemMeta(meta);
         }
         return item;
@@ -1045,10 +1344,11 @@ public final class LootInjectorMenuService implements Listener {
     }
 
     private record NamespaceListHolder(int page) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
+    private record StructureGroupListHolder(int page, StructureListMode mode, String namespaceFilter) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
     private record VillagerListHolder(int page, StructureListMode mode) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
     private record MobNamespaceListHolder(int page) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
     private record MobListHolder(int page, String namespaceFilter, StructureListMode mode) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
-    private record StructureListHolder(int page, StructureListMode mode, String namespaceFilter) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
+    private record StructureListHolder(int page, StructureListMode mode, String namespaceFilter, String groupFilter) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
     private record StructureEditorHolder(String targetKey, int page, String back) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
 
     private static final class EditorEntry {

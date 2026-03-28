@@ -83,6 +83,15 @@ final class StructureBaseLootCatalog {
         return sorted;
     }
 
+    @NotNull List<String> knownLootTableIds() {
+        Set<String> out = new LinkedHashSet<>();
+        out.addAll(lootTableItems.keySet());
+        out.addAll(lootTableRefs.keySet());
+        List<String> sorted = new ArrayList<>(out);
+        sorted.sort(String.CASE_INSENSITIVE_ORDER);
+        return sorted;
+    }
+
     private @NotNull List<ItemStack> baseItemsForRoots(@NotNull Set<String> roots) {
         Set<String> visited = new LinkedHashSet<>();
         Map<String, BaseItemDescriptor> matched = new LinkedHashMap<>();
@@ -246,6 +255,16 @@ final class StructureBaseLootCatalog {
         directCandidates.add("minecraft:" + last);
         directCandidates.add("minecraft:chests/" + path);
         directCandidates.add("minecraft:chests/" + last);
+        for (String alias : canonicalStructureTableAliases(path, last)) {
+            if (alias.isBlank()) {
+                continue;
+            }
+            String normalizedAlias = alias.toLowerCase(Locale.ROOT);
+            directCandidates.add(namespace + ":" + normalizedAlias);
+            directCandidates.add(namespace + ":chests/" + normalizedAlias);
+            directCandidates.add("minecraft:" + normalizedAlias);
+            directCandidates.add("minecraft:chests/" + normalizedAlias);
+        }
 
         Set<String> existingDirect = new LinkedHashSet<>();
         for (String candidate : directCandidates) {
@@ -328,8 +347,8 @@ final class StructureBaseLootCatalog {
             if (mobPath == null || mobPath.isBlank()) {
                 continue;
             }
-            int slash = mobPath.lastIndexOf('/');
-            String finalPath = slash >= 0 ? mobPath.substring(slash + 1) : mobPath;
+            int slash = mobPath.indexOf('/');
+            String finalPath = slash >= 0 ? mobPath.substring(0, slash) : mobPath;
             if (!finalPath.isBlank()) {
                 out.add(namespace + ":" + finalPath);
             }
@@ -365,6 +384,23 @@ final class StructureBaseLootCatalog {
         addTokenAnchors(anchors, path);
         addTokenAnchors(anchors, last);
         return anchors;
+    }
+
+    private @NotNull Set<String> canonicalStructureTableAliases(@NotNull String path, @NotNull String last) {
+        Set<String> out = new LinkedHashSet<>();
+        addCanonicalStructureTableAliases(out, path.toLowerCase(Locale.ROOT));
+        addCanonicalStructureTableAliases(out, last.toLowerCase(Locale.ROOT));
+        return out;
+    }
+
+    private void addCanonicalStructureTableAliases(@NotNull Set<String> out, @NotNull String value) {
+        if ("fortress".equals(value) || "nether_fortress".equals(value)) {
+            out.add("nether_bridge");
+        }
+        if ("nether_bridge".equals(value)) {
+            out.add("fortress");
+            out.add("nether_fortress");
+        }
     }
 
     private void addTokenAnchors(@NotNull Set<String> anchors, @NotNull String input) {

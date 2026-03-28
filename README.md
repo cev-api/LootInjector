@@ -12,11 +12,12 @@ LootInjector is a Paper plugin + Fabric mod that gives you one place to control 
 
 ## Supported Targets
 
-- `Structure Loot Table`
-- `Mob Drops`
-- `Villager Trades`
-- `Enchant Table`
-- `Trial Vaults`
+- `Structure` targets
+- `Direct loot_table` targets
+- `Mob` drops
+- `Villager` trades
+- `Enchant table` books
+- Trial chamber vault aliases
 
 ## Feature Parity Matrix
 
@@ -25,12 +26,14 @@ LootInjector is a Paper plugin + Fabric mod that gives you one place to control 
 | Runtime injection: loot tables / structures / mobs | Yes | Yes |
 | GUI editor | Yes | No |
 | Namespace source browser | Yes | No |
+| Structure grouping (`namespace -> group -> entries`) | Yes | No GUI (runtime supports grouped path aliases) |
 | Structure base loot discovery (vanilla + datapacks) | Yes | No GUI base view |
 | Mob source browser and mob editor | Yes | No GUI |
 | Villager trade GUI/editor | Yes | No GUI |
 | Enchant table GUI/editor | Yes | No GUI |
 | Command editing (`add`, `addhand`, `block`, `blockhand`, `clear`, `search`) | Yes | Yes |
 | Type-aware searching (structure/loot_table/mob/villager/enchant_table) | Yes | Yes |
+| `debughere` command | Yes | Yes |
 
 ## Command Reference
 
@@ -45,6 +48,7 @@ Base command: `/lootinjector`
 - `/lootinjector block <structure|loot_table|mob|villager|enchant_table> <id> <item_id>`
 - `/lootinjector blockhand <structure|loot_table|mob|villager|enchant_table> <id>`
 - `/lootinjector clear <structure|loot_table|mob|villager|enchant_table> <id>`
+- `/lootinjector debughere`
 
 ### Paper-only
 
@@ -63,8 +67,14 @@ Base command: `/lootinjector`
   - Villagers
   - Enchant Table
   - Mob Drops
+- Structure and mob lists are filtered to actionable targets (real loot/container-backed or configured).
+- Structure browsing is now hierarchical for large datapacks:
+  - `Namespace -> Group -> Entries`
+  - Example: `incendium -> castle -> castle/blacksmith/chestplate`
+  - Includes `All Entries` and `Direct Entries` group shortcuts.
 - Mob Drops has namespace drilldown, then per-mob editor.
 - Mob icons use vanilla spawn eggs where available, else spawner fallback.
+- Structure editor Back returns to the previous structure list page/mode/namespace.
 - Editors support:
   - Viewing base entries
   - Add custom rules (drag/drop + add button)
@@ -79,8 +89,9 @@ Base command: `/lootinjector`
 - Injects configured rules during loot-drop modification.
 - Applies to:
   - Direct loot table targets
-  - Structure aliases inferred from chest loot tables
+  - Structure aliases inferred from container-style loot tables (chest/barrel/crate/cache/supply/treasure/vault/reward), including nested datapack paths like `namespace:lab/junk`
   - Mob targets inferred from `entities/*` loot tables
+- `debughere` on Fabric includes area/chunk/container alias info; base loot item expansion remains Paper-only.
 
 ## Permissions
 

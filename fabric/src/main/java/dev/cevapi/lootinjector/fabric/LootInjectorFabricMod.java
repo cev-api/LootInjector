@@ -12,18 +12,27 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class LootInjectorFabricMod implements ModInitializer {
+    private static final Pattern RESOURCE_ID_PATTERN = Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+");
     private FabricRuleStore store;
 
     @Override
@@ -173,7 +182,9 @@ public final class LootInjectorFabricMod implements ModInitializer {
                                                 store.clearTarget(targetKey);
                                                 context.getSource().sendSuccess(() -> Component.literal("Cleared " + targetKey), false);
                                                 return 1;
-                                            }))));
+                                            }))))
+                    .then(Commands.literal("debughere")
+                            .executes(context -> handleDebugHere(context.getSource())));
             dispatcher.register(root);
         });
 
@@ -251,6 +262,170 @@ public final class LootInjectorFabricMod implements ModInitializer {
         return ThreadLocalRandom.current().nextDouble(100.0D) <= safe;
     }
 
+    private int handleDebugHere(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Run this as a player."));
+            return 0;
+        }
+
+        ServerLevel level = (ServerLevel) player.level();
+        source.sendSuccess(() -> Component.literal("DebugHere @ " + level.dimension()
+                + " [" + player.getBlockX() + ", " + player.getBlockY() + ", " + player.getBlockZ() + "]"), false);
+
+        Set<String> structures = structuresFromCurrentChunk(player);
+        if (structures.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("Chunk structures: none detected"), false);
+        } else {
+            source.sendSuccess(() -> Component.literal("Chunk structures (" + structures.size() + "):"), false);
+            for (String structureId : structures) {
+                source.sendSuccess(() -> Component.literal(" - official: " + structureId), false);
+                source.sendSuccess(() -> Component.literal("   inject key: " + TargetKey.of(TargetType.STRUCTURE, structureId)), false);
+            }
+        }
+
+        List<String> nearbyMobs = nearbyMobTypes(player, 64.0D);
+        if (nearbyMobs.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("Area mobs: none currently loaded nearby"), false);
+        } else {
+            source.sendSuccess(() -> Component.literal("Area mobs (observed nearby): " + nearbyMobs.size()), false);
+            for (int i = 0; i < nearbyMobs.size(); i++) {
+                String mobId = nearbyMobs.get(i);
+                source.sendSuccess(() -> Component.literal(" - " + mobId), false);
+            }
+        }
+
+        HitResult hit = player.pick(12.0D, 0.0F, false);
+        if (!(hit instanceof BlockHitResult blockHit) || hit.getType() != HitResult.Type.BLOCK) {
+            source.sendSuccess(() -> Component.literal("Facing container: none (look at chest/barrel/etc within 12 blocks)"), false);
+            return 1;
+        }
+
+        var blockEntity = level.getBlockEntity(blockHit.getBlockPos());
+        if (blockEntity == null) {
+            source.sendSuccess(() -> Component.literal("Facing block has no block entity/container."), false);
+            return 1;
+        }
+
+        String lootTableId = extractLootTableId(blockEntity);
+        if (lootTableId == null || lootTableId.isBlank()) {
+            source.sendSuccess(() -> Component.literal("Facing container has no loot table assigned."), false);
+            source.sendSuccess(() -> Component.literal("This usually means the container already rolled loot and consumed its table pointer."), false);
+            return 1;
+        }
+
+        source.sendSuccess(() -> Component.literal("Facing loot table (official): " + lootTableId), false);
+        source.sendSuccess(() -> Component.literal("Inject key (loot_table): " + TargetKey.of(TargetType.LOOT_TABLE, lootTableId)), false);
+
+        Set<String> aliases = structureAliasesForLootTable(lootTableId);
+        if (aliases.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("Inject structure aliases: none inferred"), false);
+        } else {
+            source.sendSuccess(() -> Component.literal("Inject structure aliases:"), false);
+            for (String alias : aliases) {
+                source.sendSuccess(() -> Component.literal(" - official: " + alias), false);
+                source.sendSuccess(() -> Component.literal("   inject key: " + TargetKey.of(TargetType.STRUCTURE, alias)), false);
+            }
+        }
+
+        source.sendSuccess(() -> Component.literal("Expected base items: unavailable on Fabric debug mode (runtime-only view)."), false);
+        return 1;
+    }
+
+    private Set<String> structuresFromCurrentChunk(ServerPlayer player) {
+        Set<String> out = new LinkedHashSet<>();
+        try {
+            ServerLevel level = (ServerLevel) player.level();
+            Object chunk = level.getChunk(player.chunkPosition().x, player.chunkPosition().z);
+            if (chunk == null) {
+                return out;
+            }
+            java.lang.reflect.Method method = chunk.getClass().getMethod("getAllStarts");
+            Object raw = method.invoke(chunk);
+            if (!(raw instanceof Map<?, ?> map)) {
+                return out;
+            }
+            for (Object keyObj : map.keySet()) {
+                if (keyObj == null) {
+                    continue;
+                }
+                String id = tryExtractStructureId(keyObj);
+                if (id != null && !id.isBlank()) {
+                    out.add(id.toLowerCase(Locale.ROOT));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    private String tryExtractStructureId(Object keyObj) {
+        String raw = keyObj.toString();
+        Matcher matcher = RESOURCE_ID_PATTERN.matcher(raw.toLowerCase(Locale.ROOT));
+        return matcher.find() ? matcher.group() : null;
+    }
+
+    private List<String> nearbyMobTypes(ServerPlayer player, double radius) {
+        Set<String> out = new LinkedHashSet<>();
+        ServerLevel level = (ServerLevel) player.level();
+        for (Entity entity : level.getEntities(player, player.getBoundingBox().inflate(radius),
+                candidate -> candidate instanceof LivingEntity && !(candidate instanceof ServerPlayer))) {
+            if (!(entity instanceof LivingEntity)) {
+                continue;
+            }
+            if (entity instanceof ServerPlayer) {
+                continue;
+            }
+            String id = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
+            if (id != null && !id.isBlank()) {
+                out.add(id.toLowerCase(Locale.ROOT));
+            }
+        }
+        List<String> sorted = new ArrayList<>(out);
+        sorted.sort(String.CASE_INSENSITIVE_ORDER);
+        return sorted;
+    }
+
+    private String extractLootTableId(Object blockEntity) {
+        for (String methodName : List.of("getLootTable", "lootTable", "getLootTableId", "lootTableId")) {
+            try {
+                java.lang.reflect.Method method = blockEntity.getClass().getMethod(methodName);
+                Object value = method.invoke(blockEntity);
+                if (value == null) {
+                    continue;
+                }
+                String asString = value.toString();
+                if (!asString.isBlank()) {
+                    return sanitizeLootTableString(asString);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        for (String fieldName : List.of("lootTable", "lootTableId")) {
+            try {
+                java.lang.reflect.Field field = blockEntity.getClass().getDeclaredField(fieldName);
+                field.setAccessible(true);
+                Object value = field.get(blockEntity);
+                if (value == null) {
+                    continue;
+                }
+                String asString = value.toString();
+                if (!asString.isBlank()) {
+                    return sanitizeLootTableString(asString);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private String sanitizeLootTableString(String raw) {
+        String out = raw.trim().toLowerCase(Locale.ROOT);
+        out = out.replace("resourcekey[minecraft:loot_table / ", "");
+        out = out.replace("resourcekey[", "").replace("]", "");
+        return out.trim();
+    }
+
     private Set<String> structureAliasesForLootTable(String lootTableId) {
         Set<String> out = new LinkedHashSet<>();
         if (lootTableId == null || lootTableId.isBlank()) {
@@ -263,36 +438,95 @@ public final class LootInjectorFabricMod implements ModInitializer {
         }
         String namespace = normalized.substring(0, colon);
         String path = normalized.substring(colon + 1);
+        if (!isLikelyStructureContainerTable(path)) {
+            return out;
+        }
         String marker = "chests/";
         int idx = path.indexOf(marker);
-        if (idx < 0 || idx + marker.length() >= path.length()) {
-            return out;
-        }
+        String tablePath = (idx >= 0 && idx + marker.length() < path.length()) ? path.substring(idx + marker.length()) : path;
 
-        String chestPath = path.substring(idx + marker.length());
-        String[] parts = chestPath.split("/");
-        if (parts.length == 0) {
-            return out;
-        }
-        String first = parts[0];
-        if (!first.isBlank()) {
-            out.add(namespace + ":" + first);
-        }
-        String last = parts[parts.length - 1];
-        if (!last.isBlank()) {
-            out.add(namespace + ":" + last);
-        }
+        addStructureAliasCandidates(out, namespace, tablePath);
+        addCanonicalStructureAliases(out, namespace, tablePath);
 
-        if (chestPath.startsWith("trial_chambers/")) {
-            if (chestPath.contains("ominous")) {
+        if (tablePath.startsWith("trial_chambers/") || tablePath.startsWith("trial_chamber/")) {
+            if (tablePath.contains("ominous")) {
                 out.add(namespace + ":trial_chambers_ominous_vault");
-            } else if (chestPath.contains("vault") || chestPath.contains("reward")) {
+            } else if (tablePath.contains("vault") || tablePath.contains("reward")) {
                 out.add(namespace + ":trial_chambers_vault");
             } else {
                 out.add(namespace + ":trial_chambers");
             }
         }
         return out;
+    }
+
+    private void addStructureAliasCandidates(Set<String> out, String namespace, String tablePath) {
+        if (!tablePath.isBlank()) {
+            out.add(namespace + ":" + tablePath);
+        }
+        String[] parts = tablePath.split("/");
+        if (parts.length > 0) {
+            String first = parts[0];
+            if (!first.isBlank()) out.add(namespace + ":" + first);
+            String last = parts[parts.length - 1];
+            if (!last.isBlank()) out.add(namespace + ":" + last);
+        }
+
+        String leaf = parts.length == 0 ? tablePath : parts[parts.length - 1];
+        if (leaf == null || leaf.isBlank()) {
+            return;
+        }
+        String trimmed = leaf;
+        String[] suffixes = {"_chest", "_barrel", "_crate", "_supply", "_loot", "_cache"};
+        for (String suffix : suffixes) {
+            if (trimmed.endsWith(suffix) && trimmed.length() > suffix.length()) {
+                trimmed = trimmed.substring(0, trimmed.length() - suffix.length());
+                break;
+            }
+        }
+        if (!trimmed.isBlank()) out.add(namespace + ":" + trimmed);
+
+        String[] tokens = trimmed.split("_");
+        if (tokens.length >= 2) out.add(namespace + ":" + tokens[0] + "_" + tokens[1]);
+        if (tokens.length >= 3) out.add(namespace + ":" + tokens[0] + "_" + tokens[1] + "_" + tokens[2]);
+    }
+
+    private void addCanonicalStructureAliases(Set<String> out, String namespace, String tablePath) {
+        String leaf = tablePath;
+        int slash = tablePath.lastIndexOf('/');
+        if (slash >= 0 && slash + 1 < tablePath.length()) {
+            leaf = tablePath.substring(slash + 1);
+        }
+        if ("nether_bridge".equals(leaf)) {
+            out.add(namespace + ":fortress");
+            out.add(namespace + ":nether_fortress");
+        }
+    }
+
+    private boolean isLikelyStructureContainerTable(String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        String[] denyPrefixes = {
+                "blocks/", "block/",
+                "entities/", "entity/",
+                "items/", "item/",
+                "gameplay/", "gifts/", "gift/",
+                "sheep/", "archeology/", "archaeology/"
+        };
+        for (String prefix : denyPrefixes) {
+            if (lower.startsWith(prefix)) {
+                return false;
+            }
+        }
+        return lower.contains("chest")
+                || lower.contains("barrel")
+                || lower.contains("crate")
+                || lower.contains("cache")
+                || lower.contains("supply")
+                || lower.contains("treasure")
+                || lower.contains("vault")
+                || lower.contains("reward")
+                || lower.contains("/")
+                || lower.startsWith("chests/");
     }
 
     /*

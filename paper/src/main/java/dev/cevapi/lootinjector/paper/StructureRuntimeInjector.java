@@ -101,41 +101,10 @@ public final class StructureRuntimeInjector implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onContainerOpen(@NotNull PlayerInteractEvent event) {
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) {
-            return;
-        }
-        Block block = event.getClickedBlock();
-        if (block == null || !(block.getState() instanceof Container) || !(block.getState() instanceof TileState tileState)) {
-            return;
-        }
-
-        if (!(tileState instanceof Lootable lootable) || lootable.getLootTable() == null) {
-            return;
-        }
-
-        PersistentDataContainer pdc = tileState.getPersistentDataContainer();
-        if (pdc.has(playerPlacedContainerKey, PersistentDataType.BYTE)) {
-            return;
-        }
-        if (pdc.has(processedChestKey, PersistentDataType.BYTE)) {
-            return;
-        }
-
-        String targetKey = detectConfiguredStructureTargetKey(block);
-        if (targetKey == null) {
-            return;
-        }
-
-        pdc.set(processedChestKey, PersistentDataType.BYTE, (byte) 1);
-        tileState.update(true, false);
-
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (!(block.getState() instanceof Container container)) {
-                return;
-            }
-            Inventory inventory = container.getInventory();
-            applyRules(targetKey, inventory);
-        }, 1L);
+        // Runtime loot mutation is handled by LootGenerateEvent.
+        // Do not mutate inventories on open, because structure-based open-time
+        // matching can bleed rules across different container loot tables
+        // inside the same structure (e.g. ancient city chest vs barrel tables).
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -167,38 +136,100 @@ public final class StructureRuntimeInjector implements Listener {
         if (colon <= 0 || colon + 1 >= lootTableId.length()) {
             return out;
         }
-        String namespace = lootTableId.substring(0, colon);
-        String path = lootTableId.substring(colon + 1);
+        String namespace = lootTableId.substring(0, colon).toLowerCase(Locale.ROOT);
+        String path = lootTableId.substring(colon + 1).toLowerCase(Locale.ROOT);
+        if (!isLikelyStructureContainerTable(path)) {
+            return out;
+        }
         String marker = "chests/";
         int idx = path.indexOf(marker);
-        if (idx < 0 || idx + marker.length() >= path.length()) {
-            return out;
-        }
+        String tablePath = (idx >= 0 && idx + marker.length() < path.length()) ? path.substring(idx + marker.length()) : path;
 
-        String chestPath = path.substring(idx + marker.length());
-        String[] parts = chestPath.split("/");
-        if (parts.length == 0) {
-            return out;
-        }
-        String first = parts[0];
-        if (!first.isBlank()) {
-            out.add(namespace + ":" + first);
-        }
-        String last = parts[parts.length - 1];
-        if (!last.isBlank()) {
-            out.add(namespace + ":" + last);
-        }
+        addStructureAliasCandidates(out, namespace, tablePath);
+        addCanonicalStructureAliases(out, namespace, tablePath);
 
-        if (chestPath.startsWith("trial_chambers/")) {
-            if (chestPath.contains("ominous")) {
+        if (tablePath.startsWith("trial_chambers/") || tablePath.startsWith("trial_chamber/")) {
+            if (tablePath.contains("ominous")) {
                 out.add(namespace + ":trial_chambers_ominous_vault");
-            } else if (chestPath.contains("vault") || chestPath.contains("reward")) {
+            } else if (tablePath.contains("vault") || tablePath.contains("reward")) {
                 out.add(namespace + ":trial_chambers_vault");
             } else {
                 out.add(namespace + ":trial_chambers");
             }
         }
         return out;
+    }
+
+    private void addStructureAliasCandidates(@NotNull Set<String> out, @NotNull String namespace, @NotNull String tablePath) {
+        if (!tablePath.isBlank()) {
+            out.add(namespace + ":" + tablePath);
+        }
+        String[] parts = tablePath.split("/");
+        if (parts.length > 0) {
+            String first = parts[0];
+            if (!first.isBlank()) out.add(namespace + ":" + first);
+            String last = parts[parts.length - 1];
+            if (!last.isBlank()) out.add(namespace + ":" + last);
+        }
+
+        String leaf = parts.length == 0 ? tablePath : parts[parts.length - 1];
+        if (leaf == null || leaf.isBlank()) return;
+
+        String trimmed = leaf;
+        String[] suffixes = {"_chest", "_barrel", "_crate", "_supply", "_loot", "_cache"};
+        for (String suffix : suffixes) {
+            if (trimmed.endsWith(suffix) && trimmed.length() > suffix.length()) {
+                trimmed = trimmed.substring(0, trimmed.length() - suffix.length());
+                break;
+            }
+        }
+        if (!trimmed.isBlank()) out.add(namespace + ":" + trimmed);
+
+        String[] tokens = trimmed.split("_");
+        if (tokens.length >= 2) {
+            out.add(namespace + ":" + tokens[0] + "_" + tokens[1]);
+        }
+        if (tokens.length >= 3) {
+            out.add(namespace + ":" + tokens[0] + "_" + tokens[1] + "_" + tokens[2]);
+        }
+    }
+
+    private void addCanonicalStructureAliases(@NotNull Set<String> out, @NotNull String namespace, @NotNull String tablePath) {
+        String leaf = tablePath;
+        int slash = tablePath.lastIndexOf('/');
+        if (slash >= 0 && slash + 1 < tablePath.length()) {
+            leaf = tablePath.substring(slash + 1);
+        }
+        if ("nether_bridge".equals(leaf)) {
+            out.add(namespace + ":fortress");
+            out.add(namespace + ":nether_fortress");
+        }
+    }
+
+    private boolean isLikelyStructureContainerTable(@NotNull String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        String[] denyPrefixes = {
+                "blocks/", "block/",
+                "entities/", "entity/",
+                "items/", "item/",
+                "gameplay/", "gifts/", "gift/",
+                "sheep/", "archeology/", "archaeology/"
+        };
+        for (String prefix : denyPrefixes) {
+            if (lower.startsWith(prefix)) {
+                return false;
+            }
+        }
+        return lower.contains("chest")
+                || lower.contains("barrel")
+                || lower.contains("crate")
+                || lower.contains("cache")
+                || lower.contains("supply")
+                || lower.contains("treasure")
+                || lower.contains("vault")
+                || lower.contains("reward")
+                || lower.contains("/")
+                || lower.startsWith("chests/");
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
