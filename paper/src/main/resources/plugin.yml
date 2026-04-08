@@ -2,7 +2,7 @@ name: LootInjector
 version: ${version}
 main: dev.cevapi.lootinjector.paper.LootInjectorPlugin
 api-version: '1.21'
-authors: [cevapi]
+authors: [CevAPI]
 commands:
   lootinjector:
     description: Open LootInjector GUI / command suite

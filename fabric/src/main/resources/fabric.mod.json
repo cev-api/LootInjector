@@ -4,7 +4,7 @@
   "version": "${version}",
   "name": "LootInjector",
   "description": "Structure, loot table, and mob loot injector/editor runtime for Fabric.",
-  "authors": ["cevapi"],
+  "authors": ["CevAPI"],
   "environment": "server",
   "entrypoints": {
     "main": [
