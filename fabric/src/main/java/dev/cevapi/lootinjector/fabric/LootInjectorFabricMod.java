@@ -11,6 +11,7 @@ import net.fabricmc.fabric.api.loot.v3.LootTableEvents;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.resources.Identifier;
@@ -20,6 +21,10 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.levelgen.structure.Structure;
+import net.minecraft.world.level.storage.loot.LootContext;
+import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -28,11 +33,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public final class LootInjectorFabricMod implements ModInitializer {
-    private static final Pattern RESOURCE_ID_PATTERN = Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+");
     private FabricRuleStore store;
 
     @Override
@@ -202,6 +204,9 @@ public final class LootInjectorFabricMod implements ModInitializer {
             for (String structureAlias : structureAliasesForLootTable(id)) {
                 applyRulesForTarget(TargetKey.of(TargetType.STRUCTURE, structureAlias), drops);
             }
+            for (String structureId : structuresAtLootContext(lootContext)) {
+                applyRulesForTarget(TargetKey.of(TargetType.STRUCTURE, structureId), drops);
+            }
 
             Identifier parsed = Identifier.tryParse(id);
             if (parsed == null) {
@@ -336,7 +341,7 @@ public final class LootInjectorFabricMod implements ModInitializer {
         Set<String> out = new LinkedHashSet<>();
         try {
             ServerLevel level = (ServerLevel) player.level();
-            Object chunk = level.getChunk(player.chunkPosition().x, player.chunkPosition().z);
+            Object chunk = level.getChunk(player.chunkPosition().x(), player.chunkPosition().z());
             if (chunk == null) {
                 return out;
             }
@@ -345,11 +350,14 @@ public final class LootInjectorFabricMod implements ModInitializer {
             if (!(raw instanceof Map<?, ?> map)) {
                 return out;
             }
-            for (Object keyObj : map.keySet()) {
-                if (keyObj == null) {
+            var registry = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (!(entry.getKey() instanceof Structure structure)
+                        || !(entry.getValue() instanceof net.minecraft.world.level.levelgen.structure.StructureStart start)
+                        || !start.isValid()) {
                     continue;
                 }
-                String id = tryExtractStructureId(keyObj);
+                String id = registry.getKey(structure).toString();
                 if (id != null && !id.isBlank()) {
                     out.add(id.toLowerCase(Locale.ROOT));
                 }
@@ -359,10 +367,30 @@ public final class LootInjectorFabricMod implements ModInitializer {
         return out;
     }
 
-    private String tryExtractStructureId(Object keyObj) {
-        String raw = keyObj.toString();
-        Matcher matcher = RESOURCE_ID_PATTERN.matcher(raw.toLowerCase(Locale.ROOT));
-        return matcher.find() ? matcher.group() : null;
+    private Set<String> structuresAtLootContext(LootContext lootContext) {
+        Set<String> out = new LinkedHashSet<>();
+        Vec3 origin = lootContext.getOptionalParameter(LootContextParams.ORIGIN);
+        if (origin == null) {
+            return out;
+        }
+        try {
+            ServerLevel level = lootContext.getLevel();
+            int blockX = (int) Math.floor(origin.x);
+            int blockY = (int) Math.floor(origin.y);
+            int blockZ = (int) Math.floor(origin.z);
+            var chunk = level.getChunk(blockX >> 4, blockZ >> 4);
+            var registry = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
+            for (Map.Entry<Structure, net.minecraft.world.level.levelgen.structure.StructureStart> entry
+                    : chunk.getAllStarts().entrySet()) {
+                var start = entry.getValue();
+                if (start != null && start.isValid()
+                        && start.getBoundingBox().isInside(blockX, blockY, blockZ)) {
+                    out.add(registry.getKey(entry.getKey()).toString().toLowerCase(Locale.ROOT));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
     }
 
     private List<String> nearbyMobTypes(ServerPlayer player, double radius) {

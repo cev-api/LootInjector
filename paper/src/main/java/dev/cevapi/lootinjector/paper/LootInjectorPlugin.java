@@ -700,7 +700,7 @@ public final class LootInjectorPlugin extends JavaPlugin implements CommandExecu
 
     public @NotNull List<Structure> allStructures() {
         List<Structure> structures = new ArrayList<>();
-        for (Structure structure : Registry.STRUCTURE) {
+        for (Structure structure : structureRegistry()) {
             structures.add(structure);
         }
         structures.sort(Comparator.comparing(s -> s.getKey().toString(), String.CASE_INSENSITIVE_ORDER));
@@ -709,7 +709,7 @@ public final class LootInjectorPlugin extends JavaPlugin implements CommandExecu
 
     private @NotNull List<String> searchStructures(@NotNull String query) {
         List<String> out = new ArrayList<>();
-        for (Structure structure : Registry.STRUCTURE) {
+        for (Structure structure : structureRegistry()) {
             String key = structure.getKey().toString();
             if (SearchUtil.contains(key, query)) {
                 out.add(key);
@@ -722,6 +722,21 @@ public final class LootInjectorPlugin extends JavaPlugin implements CommandExecu
         }
         out.sort(String.CASE_INSENSITIVE_ORDER);
         return out;
+    }
+
+    /**
+     * Datapack registries are live server registries. Since 26.2, the legacy
+     * static Bukkit registry is not guaranteed to contain datapack entries.
+     */
+    public @NotNull Iterable<Structure> structureRegistry() {
+        try {
+            org.bukkit.Registry<Structure> live = getServer().getRegistry(Structure.class);
+            if (live != null) {
+                return live;
+            }
+        } catch (Throwable ignored) {
+        }
+        return Registry.STRUCTURE;
     }
 
     private @NotNull List<String> searchLootTables(@NotNull String query) {

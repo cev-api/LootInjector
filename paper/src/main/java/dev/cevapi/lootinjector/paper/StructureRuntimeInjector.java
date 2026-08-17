@@ -127,6 +127,30 @@ public final class StructureRuntimeInjector implements Listener {
             }
         }
 
+        if (event.getLootContext() != null && event.getLootContext().getLocation() != null) {
+            org.bukkit.Location location = event.getLootContext().getLocation();
+            World world = location.getWorld();
+            for (Structure structure : plugin.structureRegistry()) {
+                boolean inside = false;
+                if (world != null) {
+                    for (GeneratedStructure generated : world.getStructures(
+                            location.getBlockX() >> 4, location.getBlockZ() >> 4, structure)) {
+                        if (generated.getBoundingBox().contains(location.getX(), location.getY(), location.getZ())) {
+                            inside = true;
+                            break;
+                        }
+                    }
+                }
+                if (inside) {
+                    String structureId = structure.getKey().toString().toLowerCase(Locale.ROOT);
+                    String structureTarget = TargetKey.of(TargetType.STRUCTURE, structureId);
+                    if (store.hasProfile(structureTarget)) {
+                        applyRules(structureTarget, loot);
+                    }
+                }
+            }
+        }
+
         event.setLoot(loot);
     }
 

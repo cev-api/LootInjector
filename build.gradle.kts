@@ -4,7 +4,7 @@ plugins {
 
 allprojects {
     group = "dev.cevapi.lootinjector"
-    version = "0.0.2"
+    version = "0.0.3"
 }
 
 subprojects {
@@ -12,12 +12,12 @@ subprojects {
 
     extensions.configure<org.gradle.api.plugins.JavaPluginExtension> {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(21))
+            languageVersion.set(JavaLanguageVersion.of(25))
         }
     }
 
     tasks.withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
-        options.release.set(21)
+        options.release.set(25)
     }
 }

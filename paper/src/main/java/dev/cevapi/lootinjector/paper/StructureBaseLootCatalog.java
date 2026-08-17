@@ -40,10 +40,13 @@ import java.util.stream.Stream;
 final class StructureBaseLootCatalog {
     private static final String LOOT_TABLE_DIR_NEW = "/loot_table/";
     private static final String LOOT_TABLE_DIR_OLD = "/loot_tables/";
+    private static final String STRUCTURE_DIR = "/worldgen/structure/";
 
     private final JavaPlugin plugin;
     private final Map<String, Map<String, BaseItemDescriptor>> lootTableItems = new HashMap<>();
     private final Map<String, Set<String>> lootTableRefs = new HashMap<>();
+    private final Set<String> datapackStructureIds = new LinkedHashSet<>();
+    private final Set<String> datapackMobIds = new LinkedHashSet<>();
     private final Map<String, Material> materialCache = new HashMap<>();
     private int scannedLootTableFileCount;
 
@@ -76,6 +79,7 @@ final class StructureBaseLootCatalog {
 
     @NotNull List<String> knownMobIdsFromLootTables() {
         Set<String> out = new LinkedHashSet<>();
+        out.addAll(datapackMobIds);
         collectMobIdsFromTableIds(out, lootTableItems.keySet());
         collectMobIdsFromTableIds(out, lootTableRefs.keySet());
         List<String> sorted = new ArrayList<>(out);
@@ -88,6 +92,12 @@ final class StructureBaseLootCatalog {
         out.addAll(lootTableItems.keySet());
         out.addAll(lootTableRefs.keySet());
         List<String> sorted = new ArrayList<>(out);
+        sorted.sort(String.CASE_INSENSITIVE_ORDER);
+        return sorted;
+    }
+
+    @NotNull List<String> knownStructureIds() {
+        List<String> sorted = new ArrayList<>(datapackStructureIds);
         sorted.sort(String.CASE_INSENSITIVE_ORDER);
         return sorted;
     }
@@ -287,6 +297,8 @@ final class StructureBaseLootCatalog {
             includeAnchoredVariants(out, namespace, anchor);
             includeAnchoredVariants(out, "minecraft", anchor);
         }
+        includeLootTablesWithMatchingLeaf(out, namespace, last, lootTableItems.keySet());
+        includeLootTablesWithMatchingLeaf(out, namespace, last, lootTableRefs.keySet());
         return out;
     }
 
@@ -443,6 +455,25 @@ final class StructureBaseLootCatalog {
         return lootTableItems.containsKey(tableId) || lootTableRefs.containsKey(tableId);
     }
 
+    private void includeLootTablesWithMatchingLeaf(@NotNull Set<String> out,
+                                                   @NotNull String namespace,
+                                                   @NotNull String structureLeaf,
+                                                   @NotNull Collection<String> tableIds) {
+        String prefix = namespace + ":";
+        for (String tableId : tableIds) {
+            if (!tableId.startsWith(prefix)) {
+                continue;
+            }
+            String rel = tableId.substring(prefix.length());
+            int slash = rel.lastIndexOf('/');
+            String leaf = slash >= 0 ? rel.substring(slash + 1) : rel;
+            if (leaf.equals(structureLeaf)
+                    || leaf.startsWith(structureLeaf + "_")
+                    || leaf.endsWith("_" + structureLeaf)) {
+                out.add(tableId);
+            }
+        }
+    }
     private void includeAnchoredVariantsFromRoot(@NotNull Set<String> out, @NotNull String rootTableId) {
         int colon = rootTableId.indexOf(':');
         if (colon <= 0) {
@@ -548,6 +579,8 @@ final class StructureBaseLootCatalog {
             while (entries.hasMoreElements()) {
                 JarEntry entry = entries.nextElement();
                 String name = entry.getName();
+                ingestStructurePath(name);
+                ingestMobLootPath(name);
                 if (!isLootTableJsonPath(name)) {
                     continue;
                 }
@@ -588,10 +621,15 @@ final class StructureBaseLootCatalog {
 
     private void scanDatapackFolder(@NotNull Path folder) {
         try (Stream<Path> files = Files.walk(folder)) {
-            files.filter(path -> Files.isRegularFile(path) && isLootTableJsonPath(path.toString().replace('\\', '/')))
+            files.filter(Files::isRegularFile)
                     .forEach(path -> {
+                        String normalized = path.toString().replace((char) 92, '/');
+                        ingestStructurePath(normalized);
+                        ingestMobLootPath(normalized);
+                        if (!isLootTableJsonPath(normalized)) {
+                            return;
+                        }
                         try (InputStream in = Files.newInputStream(path)) {
-                            String normalized = path.toString().replace('\\', '/');
                             int dataIdx = normalized.lastIndexOf("/data/");
                             if (dataIdx >= 0) {
                                 ingestLootTableJson(normalized.substring(dataIdx + 1), in);
@@ -609,6 +647,8 @@ final class StructureBaseLootCatalog {
             while (entries.hasMoreElements()) {
                 JarEntry entry = entries.nextElement();
                 String name = entry.getName();
+                ingestStructurePath(name);
+                ingestMobLootPath(name);
                 if (!isLootTableJsonPath(name)) {
                     continue;
                 }
@@ -621,6 +661,52 @@ final class StructureBaseLootCatalog {
         }
     }
 
+    private void ingestMobLootPath(@NotNull String rawPath) {
+        String path = rawPath.replace((char) 92, '/');
+        String lowered = path.toLowerCase(Locale.ROOT);
+        int dataIndex = lowered.indexOf("data/");
+        int entityIndex = lowered.indexOf("/loot_table/entity/");
+        int entitiesIndex = lowered.indexOf("/loot_table/entities/");
+        String marker;
+        int markerIndex;
+        if (entityIndex >= 0) {
+            marker = "/loot_table/entity/";
+            markerIndex = entityIndex;
+        } else if (entitiesIndex >= 0) {
+            marker = "/loot_table/entities/";
+            markerIndex = entitiesIndex;
+        } else {
+            return;
+        }
+        if (dataIndex < 0 || markerIndex <= dataIndex + "data/".length()) {
+            return;
+        }
+        String namespace = path.substring(dataIndex + "data/".length(), markerIndex);
+        String mobPath = path.substring(markerIndex + marker.length(), path.length() - ".json".length());
+        if (!namespace.isBlank() && !namespace.contains("/") && !mobPath.isBlank()) {
+            datapackMobIds.add(namespace.toLowerCase(Locale.ROOT) + ":" + mobPath.toLowerCase(Locale.ROOT));
+        }
+    }
+    private void ingestStructurePath(@NotNull String rawPath) {
+        String path = rawPath.replace((char) 92, '/');
+        String lowered = path.toLowerCase(Locale.ROOT);
+        if (!lowered.endsWith(".json")) {
+            return;
+        }
+        int dataIndex = lowered.indexOf("data/");
+        int structureIndex = lowered.indexOf(STRUCTURE_DIR);
+        if (dataIndex < 0 || structureIndex < 0 || structureIndex <= dataIndex + "data/".length()) {
+            return;
+        }
+        String namespace = path.substring(dataIndex + "data/".length(), structureIndex);
+        if (namespace.isBlank() || namespace.contains("/")) {
+            return;
+        }
+        String structurePath = path.substring(structureIndex + STRUCTURE_DIR.length(), path.length() - ".json".length());
+        if (!structurePath.isBlank()) {
+            datapackStructureIds.add(namespace.toLowerCase(Locale.ROOT) + ":" + structurePath.toLowerCase(Locale.ROOT));
+        }
+    }
     private boolean isLootTableJsonPath(@NotNull String path) {
         String lowered = path.toLowerCase(Locale.ROOT).replace('\\', '/');
         if (!lowered.endsWith(".json")) {

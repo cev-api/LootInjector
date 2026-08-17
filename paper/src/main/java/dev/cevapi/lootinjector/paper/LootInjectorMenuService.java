@@ -258,8 +258,57 @@ public final class LootInjectorMenuService implements Listener {
         openEditor(player, TargetType.MOB, mobId, page, back);
     }
 
+    private void openLootTableList(@NotNull Player player, int page, @NotNull StructureListMode mode) {
+        List<String> tables = new ArrayList<>(baseLootCatalog.knownLootTableIds());
+        if (mode == StructureListMode.CONFIGURED) {
+            tables.removeIf(id -> !store.hasProfile(TargetKey.of(TargetType.LOOT_TABLE, id)));
+        }
+        int totalPages = Math.max(1, (tables.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+        int safePage = Math.max(0, Math.min(page, totalPages - 1));
+        Inventory inventory = Bukkit.createInventory(new LootTableListHolder(safePage, mode), MENU_SIZE,
+                Component.text("Loot Tables [" + (safePage + 1) + "/" + totalPages + "]", NamedTextColor.AQUA));
+        int start = safePage * PAGE_SIZE;
+        int end = Math.min(tables.size(), start + PAGE_SIZE);
+        int slot = 0;
+        for (int i = start; i < end; i++) {
+            ItemStack item = new ItemStack(Material.CHEST);
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                meta.displayName(Component.text(tables.get(i), store.hasProfile(TargetKey.of(TargetType.LOOT_TABLE, tables.get(i))) ? NamedTextColor.GREEN : NamedTextColor.GRAY));
+                item.setItemMeta(meta);
+            }
+            inventory.setItem(slot++, item);
+        }
+        inventory.setItem(45, navItem("<< Prev", safePage > 0));
+        inventory.setItem(46, backItem());
+        inventory.setItem(47, modeSwitchItem(mode, "All Loot Tables", "Configured Only"));
+        inventory.setItem(49, infoItem("Select a direct loot table to edit"));
+        inventory.setItem(53, navItem("Next >>", safePage + 1 < totalPages));
+        player.openInventory(inventory);
+    }
+
+    private void handleLootTableListClick(@NotNull InventoryClickEvent event, @NotNull Player player, @NotNull LootTableListHolder holder) {
+        if (event.getClickedInventory() == null || !event.getClickedInventory().equals(event.getView().getTopInventory())) return;
+        event.setCancelled(true);
+        List<String> tables = new ArrayList<>(baseLootCatalog.knownLootTableIds());
+        if (holder.mode == StructureListMode.CONFIGURED) tables.removeIf(id -> !store.hasProfile(TargetKey.of(TargetType.LOOT_TABLE, id)));
+        int totalPages = Math.max(1, (tables.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+        int slot = event.getRawSlot();
+        if (slot == 45 && holder.page > 0) { openLootTableList(player, holder.page - 1, holder.mode); return; }
+        if (slot == 53 && holder.page + 1 < totalPages) { openLootTableList(player, holder.page + 1, holder.mode); return; }
+        if (slot == 46) { openNamespaceList(player, 0); return; }
+        if (slot == 47) {
+            StructureListMode next = holder.mode == StructureListMode.ALL ? StructureListMode.CONFIGURED : StructureListMode.ALL;
+            openLootTableList(player, 0, next);
+            return;
+        }
+        if (slot < 0 || slot >= PAGE_SIZE) return;
+        int index = holder.page * PAGE_SIZE + slot;
+        if (index >= tables.size()) return;
+        openEditor(player, TargetType.LOOT_TABLE, tables.get(index), 0, "loot_tables:" + holder.mode.name());
+    }
     private void openEnchantEditor(@NotNull Player player, int page) {
-        openEditor(player, TargetType.ENCHANT_TABLE, "book", page, "namespace");
+        openEditor(player, TargetType.ENCHANT_TABLE, "book", page, "namespace", StructureListMode.ALL);
     }
 
     private void openEditor(@NotNull Player player,
@@ -267,9 +316,18 @@ public final class LootInjectorMenuService implements Listener {
                             @NotNull String id,
                             int page,
                             @NotNull String back) {
+        openEditor(player, type, id, page, back, StructureListMode.ALL);
+    }
+
+    private void openEditor(@NotNull Player player,
+                            @NotNull TargetType type,
+                            @NotNull String id,
+                            int page,
+                            @NotNull String back,
+                            @NotNull StructureListMode mode) {
         String targetKey = TargetKey.of(type, id);
         StructureLootProfile profile = store.profile(targetKey);
-        List<EditorEntry> entries = editorEntries(type, id, profile);
+        List<EditorEntry> entries = editorEntries(type, id, profile, mode);
         int totalPages = Math.max(1, (entries.size() + PAGE_SIZE - 1) / PAGE_SIZE);
         int safePage = Math.max(0, Math.min(page, totalPages - 1));
 
@@ -281,7 +339,7 @@ public final class LootInjectorMenuService implements Listener {
             default -> id;
         };
 
-        Inventory inventory = Bukkit.createInventory(new StructureEditorHolder(targetKey, safePage, back), MENU_SIZE,
+        Inventory inventory = Bukkit.createInventory(new StructureEditorHolder(targetKey, safePage, back, mode), MENU_SIZE,
                 Component.text(shorten(title, 32) + " [" + (safePage + 1) + "/" + totalPages + "]", NamedTextColor.LIGHT_PURPLE));
 
         int start = safePage * PAGE_SIZE;
@@ -303,6 +361,7 @@ public final class LootInjectorMenuService implements Listener {
         } else {
             inventory.setItem(49, infoItem("Left/Right +/- chance, Shift +/-10, Middle delete"));
         }
+        if (type == TargetType.ENCHANT_TABLE) inventory.setItem(50, modeSwitchItem(mode, "All Enchantments", "Configured Only"));
         inventory.setItem(51, clearItem());
         inventory.setItem(53, navItem("Next >>", safePage + 1 < totalPages));
         player.openInventory(inventory);
@@ -318,6 +377,7 @@ public final class LootInjectorMenuService implements Listener {
         else if (top.getHolder() instanceof VillagerListHolder h) handleVillagerListClick(event, player, h);
         else if (top.getHolder() instanceof MobNamespaceListHolder h) handleMobNamespaceListClick(event, player, h);
         else if (top.getHolder() instanceof MobListHolder h) handleMobListClick(event, player, h);
+        else if (top.getHolder() instanceof LootTableListHolder h) handleLootTableListClick(event, player, h);
         else if (top.getHolder() instanceof StructureEditorHolder h) handleEditorClick(event, player, h);
     }
 
@@ -330,6 +390,7 @@ public final class LootInjectorMenuService implements Listener {
                 || top.getHolder() instanceof VillagerListHolder
                 || top.getHolder() instanceof MobNamespaceListHolder
                 || top.getHolder() instanceof MobListHolder
+                || top.getHolder() instanceof LootTableListHolder
                 || top.getHolder() instanceof StructureEditorHolder)) return;
         int topSize = top.getSize();
         for (int raw : event.getRawSlots()) {
@@ -484,7 +545,7 @@ public final class LootInjectorMenuService implements Listener {
         if (type == null) return;
         String id = TargetKey.idOf(targetKey);
         StructureLootProfile profile = store.profile(targetKey);
-        List<EditorEntry> entries = editorEntries(type, id, profile);
+        List<EditorEntry> entries = editorEntries(type, id, profile, holder.mode);
         int totalPages = Math.max(1, (entries.size() + PAGE_SIZE - 1) / PAGE_SIZE);
 
         Inventory top = event.getView().getTopInventory();
@@ -507,15 +568,15 @@ public final class LootInjectorMenuService implements Listener {
                 } else {
                     store.addRule(targetKey, LootRuleType.CUSTOM, 1.0D, stack);
                 }
-                openEditor(player, type, id, holder.page, holder.back);
+                openEditor(player, type, id, holder.page, holder.back, holder.mode);
             }
             return;
         }
 
         event.setCancelled(true);
         int slot = event.getRawSlot();
-        if (slot == 45 && holder.page > 0) { openEditor(player, type, id, holder.page - 1, holder.back); return; }
-        if (slot == 53 && holder.page + 1 < totalPages) { openEditor(player, type, id, holder.page + 1, holder.back); return; }
+        if (slot == 45 && holder.page > 0) { openEditor(player, type, id, holder.page - 1, holder.back, holder.mode); return; }
+        if (slot == 53 && holder.page + 1 < totalPages) { openEditor(player, type, id, holder.page + 1, holder.back, holder.mode); return; }
         if (slot == 46) {
             if ("villager_list".equals(holder.back)) openVillagerList(player, 0, StructureListMode.ALL);
             else if (holder.back != null && holder.back.startsWith("villager_list:")) {
@@ -548,7 +609,11 @@ public final class LootInjectorMenuService implements Listener {
             else openNamespaceList(player, 0);
             return;
         }
-        if (slot == 47) {
+        if (slot == 50 && type == TargetType.ENCHANT_TABLE) {
+            StructureListMode next = holder.mode == StructureListMode.ALL ? StructureListMode.CONFIGURED : StructureListMode.ALL;
+            openEditor(player, type, id, 0, holder.back, next);
+            return;
+        }        if (slot == 47) {
             ItemStack cursor = event.getCursor();
             if (cursor == null || cursor.getType() == Material.AIR) {
                 player.sendMessage(Component.text("Hold an item on cursor and click Add", NamedTextColor.YELLOW));
@@ -571,7 +636,7 @@ public final class LootInjectorMenuService implements Listener {
             } else {
                 store.addRule(targetKey, LootRuleType.CUSTOM, 1.0D, toAdd);
             }
-            openEditor(player, type, id, holder.page, holder.back);
+            openEditor(player, type, id, holder.page, holder.back, holder.mode);
             return;
         }
         if (slot == 48) {
@@ -586,12 +651,12 @@ public final class LootInjectorMenuService implements Listener {
             }
             ItemStack toBlock = new ItemStack(cursor.getType());
             store.addRule(targetKey, LootRuleType.REMOVE, 100.0D, toBlock);
-            openEditor(player, type, id, holder.page, holder.back);
+            openEditor(player, type, id, holder.page, holder.back, holder.mode);
             return;
         }
         if (slot == 51) {
             store.clearRules(targetKey);
-            openEditor(player, type, id, 0, holder.back);
+            openEditor(player, type, id, 0, holder.back, holder.mode);
             return;
         }
         if (slot < 0 || slot >= PAGE_SIZE) return;
@@ -601,7 +666,7 @@ public final class LootInjectorMenuService implements Listener {
         if (selected.base) {
             if (selected.blockRuleId != null) store.removeRule(targetKey, selected.blockRuleId);
             else store.addRule(targetKey, LootRuleType.REMOVE, 100.0D, new ItemStack(selected.source.getType()));
-            openEditor(player, type, id, holder.page, holder.back);
+            openEditor(player, type, id, holder.page, holder.back, holder.mode);
             return;
         }
 
@@ -609,7 +674,7 @@ public final class LootInjectorMenuService implements Listener {
                 || event.getAction() == InventoryAction.CLONE_STACK;
         if (deleteClick) {
             store.removeRule(targetKey, selected.rule.id());
-            openEditor(player, type, id, holder.page, holder.back);
+            openEditor(player, type, id, holder.page, holder.back, holder.mode);
             return;
         }
         if (selected.rule.type() == LootRuleType.REMOVE) return;
@@ -644,14 +709,24 @@ public final class LootInjectorMenuService implements Listener {
             if (event.getClick().isLeftClick()) store.updateChance(targetKey, selected.rule.id(), selected.rule.chance() + step);
             if (event.getClick().isRightClick()) store.updateChance(targetKey, selected.rule.id(), selected.rule.chance() - step);
         }
-        openEditor(player, type, id, holder.page, holder.back);
+        openEditor(player, type, id, holder.page, holder.back, holder.mode);
     }
 
-    private List<EditorEntry> editorEntries(TargetType type, String id, StructureLootProfile profile) {
+    private boolean sameEnchantment(ItemStack left, ItemStack right) {
+        if (left.getType() != Material.ENCHANTED_BOOK || right.getType() != Material.ENCHANTED_BOOK
+                || !(left.getItemMeta() instanceof EnchantmentStorageMeta leftMeta)
+                || !(right.getItemMeta() instanceof EnchantmentStorageMeta rightMeta)) {
+            return false;
+        }
+        return leftMeta.getStoredEnchants().equals(rightMeta.getStoredEnchants());
+    }
+    private List<EditorEntry> editorEntries(TargetType type, String id, StructureLootProfile profile, StructureListMode mode) {
         List<EditorEntry> entries = new ArrayList<>();
         List<ItemStack> baseItems = new ArrayList<>();
         if (type == TargetType.STRUCTURE) {
             baseItems.addAll(baseLootCatalog.baseItemsForStructure(id));
+        } else if (type == TargetType.LOOT_TABLE) {
+            baseItems.addAll(baseLootCatalog.baseItemsForLootTable(id));
         } else if (type == TargetType.MOB) {
             baseItems.addAll(baseLootCatalog.baseItemsForMob(id));
         } else if (type == TargetType.VILLAGER) {
@@ -659,8 +734,12 @@ public final class LootInjectorMenuService implements Listener {
         } else if (type == TargetType.ENCHANT_TABLE) {
             baseItems.addAll(enchantBaseItems());
         }
-        baseItems.sort(Comparator.comparing(s -> s.getType().name(), String.CASE_INSENSITIVE_ORDER));
         List<LootRule> rules = new ArrayList<>(profile.rules());
+        if (type == TargetType.ENCHANT_TABLE && mode == StructureListMode.CONFIGURED) {
+            baseItems.removeIf(base -> findBlockingRule(rules, base) == null
+                    && rules.stream().noneMatch(rule -> rule.type() == LootRuleType.CUSTOM && sameEnchantment(base, rule.item())));
+        }
+        baseItems.sort(Comparator.comparing(s -> s.getType().name(), String.CASE_INSENSITIVE_ORDER));
 
         for (ItemStack base : baseItems) {
             LootRule blocking = findBlockingRule(rules, base);
@@ -757,6 +836,7 @@ public final class LootInjectorMenuService implements Listener {
         for (LootRule rule : rules) {
             if (rule.type() != LootRuleType.REMOVE) continue;
             ItemStack ruleItem = rule.item();
+            if (base.getType() == Material.ENCHANTED_BOOK && sameEnchantment(base, ruleItem)) return rule;
             if (!ruleItem.hasItemMeta()) {
                 if (ruleItem.getType() == base.getType()) return rule;
             } else {
@@ -780,6 +860,10 @@ public final class LootInjectorMenuService implements Listener {
         for (String virtualId : VIRTUAL_STRUCTURE_IDS) {
             known.add(virtualId.toLowerCase(Locale.ROOT));
         }
+        for (String datapackId : baseLootCatalog.knownStructureIds()) {
+            known.add(datapackId.toLowerCase(Locale.ROOT));
+        }
+
 
         java.util.Map<String, Boolean> hasBaseLootCache = new java.util.HashMap<>();
         java.util.function.Function<String, Boolean> hasBaseLoot = id ->
@@ -1348,8 +1432,9 @@ public final class LootInjectorMenuService implements Listener {
     private record VillagerListHolder(int page, StructureListMode mode) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
     private record MobNamespaceListHolder(int page) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
     private record MobListHolder(int page, String namespaceFilter, StructureListMode mode) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
+    private record LootTableListHolder(int page, StructureListMode mode) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
     private record StructureListHolder(int page, StructureListMode mode, String namespaceFilter, String groupFilter) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
-    private record StructureEditorHolder(String targetKey, int page, String back) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
+    private record StructureEditorHolder(String targetKey, int page, String back, StructureListMode mode) implements InventoryHolder { public @NotNull Inventory getInventory() { throw new UnsupportedOperationException(); } }
 
     private static final class EditorEntry {
         final boolean base;
